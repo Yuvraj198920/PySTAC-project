@@ -1,3 +1,4 @@
+import openeo
 from pystac import Catalog, Collection, Item
 import pystac
 import os
@@ -7,6 +8,7 @@ import rasterio
 from shapely.geometry import Polygon, mapping
 from datetime import datetime
 from pystac.extensions.eo import Band, EOExtension
+from tempfile import TemporaryDirectory
 
 # Create a catalog
 catalog = Catalog(id='sentinal_data', description='Sentinal Data Catalog')
@@ -22,13 +24,13 @@ def add_item_to_collection(image_folder):
     files = os.listdir(image_folder)
     for file in files:
         if file.endswith('.tif'):
-            bbox, footprint = get_bbox_and_footprint(image_folder + file)
+            bbox, footprint = get_bbox_and_footprint(os.path.join(image_folder, file))
             item = Item(id='Sentinel-2-Bolzano-' + extract_date(file), geometry=footprint, bbox=bbox, datetime=datetime.utcnow(), properties={})
             item.common_metadata.gsd = 10
             item.common_metadata.platform = 'Sentinel-2'
             item.common_metadata.instruments = ['MSI']
             # create asset to add to the item
-            collection_asset = pystac.Asset(href=image_folder+file, media_type = pystac.MediaType.GEOTIFF)
+            collection_asset = pystac.Asset(href=os.path.join(image_folder, file), media_type = pystac.MediaType.GEOTIFF)
             item.add_asset('image', collection_asset)
             # Apple EO extension to the asset
             eo = EOExtension.ext(item.assets['image'], add_if_missing = True)
@@ -64,16 +66,35 @@ def get_bbox_and_footprint(raster):
         
         return (bbox, mapping(footprint))
 
-add_item_to_collection('./ndvi_images/')
-collection_interval = get_collection_interval(collection_items)
+with TemporaryDirectory() as tmp_dir:
 
-# get tempral extent from collection items
-collection_interval = pystac.TemporalExtent(intervals=[collection_interval])
-# Collection extent
-collection_extent = pystac.Extent(spatial= [[11.3, 46.4], [11.5, 46.5]], temporal=[['2024-01-01', '2024-01-31']])
+    connection = openeo.connect('https://openeo.dataspace.copernicus.eu').authenticate_oidc()
 
-# Create collection for Bolzano's sentinel-2 data
-collection = Collection(id='Sentinel-2-Bolzano', description='Sentinel-2 data for Bolzano', extent = collection_extent, license='CC-BY-SA-4.0')
-collection.add_items(collection_items)
-catalog.add_child(collection)
-catalog.describe()
+    spatial_extent =  {"west": 11.3, "south": 46.4, "east": 11.5, "north": 46.5}
+    temporal_extent = ["2024-01-01", "2024-01-05"]
+
+    # Load the sentinel-2 collecion
+    s2cube =  connection.load_collection('SENTINEL2_L2A', spatial_extent=spatial_extent, temporal_extent=temporal_extent, bands=['B04', 'B08'])
+    ndvi =  s2cube.ndvi(red='B04', nir='B08')
+
+    ndvi_result = ndvi.save_result(format='GTiff')
+    job = ndvi_result.create_job()
+    job.start_and_wait()
+    job.get_results().download_files(tmp_dir)
+
+    list_files = os.listdir(tmp_dir)
+    print(list_files)
+    add_item_to_collection(tmp_dir)
+    collection_interval = get_collection_interval(collection_items)
+
+    # get tempral extent from collection items
+    collection_interval = pystac.TemporalExtent(intervals=[collection_interval])
+    # Collection extent
+    collection_extent = pystac.Extent(spatial= [[11.3, 46.4], [11.5, 46.5]], temporal=[['2024-01-01', '2024-01-10']])
+
+    # Create collection for Bolzano's sentinel-2 data
+    collection = Collection(id='Sentinel-2-Bolzano', description='Sentinel-2 data for Bolzano', extent = collection_extent, license='CC-BY-SA-4.0')
+    collection.add_items(collection_items)
+    catalog.add_child(collection)
+    catalog.describe()
+    tmp_dir.cleanup()
