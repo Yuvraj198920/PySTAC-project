@@ -97,4 +97,3 @@ with TemporaryDirectory() as tmp_dir:
     collection.add_items(collection_items)
     catalog.add_child(collection)
     catalog.describe()
-    tmp_dir.cleanup()
